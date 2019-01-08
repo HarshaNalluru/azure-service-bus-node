@@ -22,11 +22,11 @@ import {
 const testMessages: SendableMessageInfo[] = [
   {
     body: "hello1",
-    messageId: `test message ${generateUuid}`
+    messageId: `test message ${generateUuid()}`
   },
   {
     body: "hello2",
-    messageId: `test message ${generateUuid}`
+    messageId: `test message ${generateUuid()}`
   }
 ];
 
@@ -46,7 +46,7 @@ async function testPeekMsgsLength(
   should.equal(peekedMsgs.length, expectedPeekLength);
 }
 
-describe("ReceiveBatch from Queue/Subscription", function(): void {
+describe("Streaming Receiver from Queue/Subscription", function(): void {
   let namespace: Namespace;
   let queueClient: QueueClient;
   let topicClient: TopicClient;
@@ -246,5 +246,91 @@ describe("ReceiveBatch from Queue/Subscription", function(): void {
     await testPeekMsgsLength(subscriptionClient, 0);
 
     await receiveListener.stop();
+  });
+
+  it.only("Abandoned message is retained in the Queue with incremented deliveryCount", async function(): Promise<
+    void
+  > {
+    await queueClient.sendBatch(testMessages);
+
+    const receivedMsgs: ServiceBusMessage[] = [];
+    const receiveListener = await queueClient.receive(
+      (msg: ServiceBusMessage) => {
+        receivedMsgs.push(msg);
+        return Promise.resolve();
+      },
+      (err: Error) => {
+        should.not.exist(err);
+      },
+      { autoComplete: false }
+    );
+
+    await delay(1000);
+
+    console.log(receiveListener);
+    console.log("hello here I'm 1");
+    testReceivedMessages(receivedMsgs);
+    console.log("hello here I'm 2");
+    await testPeekMsgsLength(queueClient, 2);
+    console.log(receivedMsgs[0].messageId, testMessages[0].messageId);
+    console.log("hello here I'm 3");
+    console.log(receivedMsgs[1].messageId, testMessages[1].messageId);
+
+    await receivedMsgs[0].abandon();
+    await receivedMsgs[1].abandon();
+
+    await receiveListener.stop();
+
+    await delay(5000);
+    const receivedMsgs2: ServiceBusMessage[] = [];
+    const receiveListener2 = await queueClient.receive(
+      (msg: ServiceBusMessage) => {
+        receivedMsgs2.push(msg);
+        return Promise.resolve();
+      },
+      (err: Error) => {
+        should.not.exist(err);
+      },
+      { autoComplete: false }
+    );
+    console.log("hello here I'm 4");
+    console.log(receiveListener2);
+
+    await testReceivedMessages(receivedMsgs2);
+    console.log("hello here I'm 5");
+
+    await testPeekMsgsLength(queueClient, 2);
+    console.log("hello here I'm 6");
+
+    should.equal(receivedMsgs2[0].deliveryCount, 1);
+    should.equal(receivedMsgs2[1].deliveryCount, 1);
+    await receivedMsgs2[0].complete();
+    await receivedMsgs2[1].complete();
+    await receiveListener2.stop();
+  });
+
+  it("Abandoned message is retained in the Subscription with incremented deliveryCount", async function(): Promise<
+    void
+  > {
+    await topicClient.send(testMessages[0]);
+
+    let receivedMsgs = await subscriptionClient.receiveBatch(1);
+
+    should.equal(receivedMsgs.length, 1);
+    should.equal(receivedMsgs[0].deliveryCount, 0);
+    should.equal(receivedMsgs[0].messageId, testMessages[0].messageId);
+
+    // TODO: This is taking 20 seconds. Why?
+    await receivedMsgs[0].abandon();
+
+    await testPeekMsgsLength(subscriptionClient, 1);
+
+    receivedMsgs = await subscriptionClient.receiveBatch(1);
+
+    should.equal(receivedMsgs.length, 1);
+    should.equal(receivedMsgs[0].deliveryCount, 1);
+    should.equal(receivedMsgs[0].messageId, testMessages[0].messageId);
+
+    await receivedMsgs[0].complete();
   });
 });
